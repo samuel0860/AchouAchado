@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'app/theme.dart';
+import 'data/remote/supabase_client.dart';
 import 'features/auth/login_screen.dart';
 import 'services/auth_service.dart';
 import 'services/theme_service.dart';
@@ -34,6 +35,10 @@ void main() async {
   ]);
 
   Animate.restartOnHotReload = true;
+
+  // Ativa o Supabase somente se SUPABASE_URL/SUPABASE_ANON_KEY foram
+  // passados via --dart-define. Sem eles, o app segue usando os mocks.
+  await AppSupabase.init();
 
   // Initialize all services
   final authService = AuthService();
