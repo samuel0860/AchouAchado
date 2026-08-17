@@ -7,7 +7,9 @@ import '../../shared/widgets/main_scaffold.dart';
 import 'login_screen.dart';
 
 class RegisterScreen extends StatefulWidget {
-  const RegisterScreen({super.key});
+  final UserType initialUserType;
+
+  const RegisterScreen({super.key, this.initialUserType = UserType.cliente});
 
   @override
   State<RegisterScreen> createState() => _RegisterScreenState();
@@ -23,7 +25,13 @@ class _RegisterScreenState extends State<RegisterScreen> {
   bool _obscureConfirm = true;
   bool _isLoading = false;
   bool _acceptTerms = false;
-  UserType _userType = UserType.cliente;
+  late UserType _userType;
+
+  @override
+  void initState() {
+    super.initState();
+    _userType = widget.initialUserType;
+  }
 
   @override
   void dispose() {
@@ -99,7 +107,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 _buildBackButton(context),
                 const SizedBox(height: 28),
                 _buildHeader(),
-                const SizedBox(height: 32),
+                const SizedBox(height: 24),
+                _buildUserTypeToggle(),
+                const SizedBox(height: 24),
                 _buildForm(),
                 const SizedBox(height: 24),
                 _buildRegisterButton(),
@@ -178,6 +188,92 @@ class _RegisterScreenState extends State<RegisterScreen> {
         ),
       ],
     ).animate().fadeIn(delay: 100.ms, duration: 400.ms).slideY(begin: 0.2, end: 0);
+  }
+
+  Widget _buildUserTypeToggle() {
+    return Container(
+      height: 54,
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceElevated.withValues(alpha: 0.5),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: _buildUserTypeItem(
+              type: UserType.cliente,
+              label: 'Sou Cliente',
+              icon: Icons.person_rounded,
+            ),
+          ),
+          Expanded(
+            child: _buildUserTypeItem(
+              type: UserType.afiliado,
+              label: 'Sou Afiliado',
+              icon: Icons.storefront_rounded,
+            ),
+          ),
+        ],
+      ),
+    ).animate().fadeIn(delay: 150.ms);
+  }
+
+  Widget _buildUserTypeItem({
+    required UserType type,
+    required String label,
+    required IconData icon,
+  }) {
+    final isSelected = _userType == type;
+    return GestureDetector(
+      onTap: () => setState(() => _userType = type),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeInOut,
+        width: double.infinity,
+        height: double.infinity,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          gradient: isSelected
+              ? const LinearGradient(
+                  colors: [Color(0xFF7C3AED), Color(0xFFEF4444)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                )
+              : null,
+          borderRadius: BorderRadius.circular(12),
+          boxShadow: isSelected
+              ? [
+                  BoxShadow(
+                    color: AppColors.primary.withValues(alpha: 0.3),
+                    blurRadius: 10,
+                    offset: const Offset(0, 4),
+                  ),
+                ]
+              : [],
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              icon,
+              size: 16,
+              color: isSelected ? Colors.white : AppColors.textMuted,
+            ),
+            const SizedBox(width: 8),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: isSelected ? FontWeight.w800 : FontWeight.w600,
+                color: isSelected ? Colors.white : AppColors.textMuted,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _buildForm() {

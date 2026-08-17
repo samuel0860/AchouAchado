@@ -666,7 +666,13 @@ class _LoginScreenState extends State<LoginScreen>
         GestureDetector(
           onTap: () => Navigator.push(
             context,
-            MaterialPageRoute(builder: (_) => const RegisterScreen()),
+            MaterialPageRoute(
+              builder: (_) => RegisterScreen(
+                initialUserType: _selectedType == LoginType.afiliado
+                    ? UserType.afiliado
+                    : UserType.cliente,
+              ),
+            ),
           ),
           child: Text(
             'Cadastre-se grátis',

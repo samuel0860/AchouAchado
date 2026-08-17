@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' as sb;
+import '../data/remote/supabase_client.dart';
 import '../models/user_model.dart';
 import 'theme_service.dart' show getStorageFile;
 
@@ -8,7 +10,19 @@ export '../models/user_model.dart';
 
 enum AuthStatus { idle, loading, authenticated, unauthenticated }
 
+/// Autenticação do app.
+///
+/// Quando o Supabase está configurado (`--dart-define=SUPABASE_URL/ANON_KEY`,
+/// ver achou_achado_api/supabase/README.md), login/cadastro/logout usam o
+/// Supabase Auth de verdade — o registro cria a linha em `auth.users` e o
+/// trigger `handle_new_user` cria o `profiles` (e `affiliates`/`affiliate_pages`
+/// se for afiliado). Sem o Supabase configurado, cai no modo local antigo
+/// (arquivo JSON no dispositivo), só para não quebrar o app.
 class AuthService extends ChangeNotifier {
+  static final AuthService _instance = AuthService._internal();
+  factory AuthService() => _instance;
+  AuthService._internal();
+
   AuthStatus _status = AuthStatus.idle;
   UserModel? _currentUser;
   String? _errorMessage;
@@ -19,7 +33,218 @@ class AuthService extends ChangeNotifier {
   bool get isLoggedIn => _status == AuthStatus.authenticated;
   bool get isAffiliate => _currentUser?.isAffiliateUser ?? false;
 
-  // ─── File-based persistence ────────────────────────────────────────────────
+  bool get _useSupabase => AppSupabase.isConfigured;
+
+  // ─── Auth methods ─────────────────────────────────────────────────────────
+
+  Future<void> init() async {
+    if (_useSupabase) return _initSupabase();
+    return _initLocal();
+  }
+
+  Future<bool> login(String email, String password) {
+    if (_useSupabase) return _loginSupabase(email, password);
+    return _loginLocal(email, password);
+  }
+
+  Future<bool> register(String name, String email, String password,
+      {UserType userType = UserType.cliente}) {
+    if (_useSupabase) return _registerSupabase(name, email, password, userType);
+    return _registerLocal(name, email, password, userType);
+  }
+
+  Future<bool> forgotPassword(String email) {
+    if (_useSupabase) return _forgotPasswordSupabase(email);
+    return _forgotPasswordLocal(email);
+  }
+
+  Future<bool> resetPassword(String email, String newPassword) {
+    if (_useSupabase) return _resetPasswordSupabase(newPassword);
+    return _resetPasswordLocal(email, newPassword);
+  }
+
+  Future<void> updateProfile({
+    String? name,
+    String? bio,
+    String? avatarColor,
+  }) {
+    if (_useSupabase) {
+      return _updateProfileSupabase(name: name, bio: bio, avatarColor: avatarColor);
+    }
+    return _updateProfileLocal(name: name, bio: bio, avatarColor: avatarColor);
+  }
+
+  Future<void> logout() async {
+    if (_useSupabase) {
+      await AppSupabase.client.auth.signOut();
+    } else {
+      final data = await _load();
+      data['isLoggedIn'] = false;
+      data.remove('currentUser');
+      await _save(data);
+    }
+    _currentUser = null;
+    _status = AuthStatus.unauthenticated;
+    notifyListeners();
+  }
+
+  // ─── Supabase ─────────────────────────────────────────────────────────────
+
+  Future<void> _initSupabase() async {
+    _status = AuthStatus.loading;
+    notifyListeners();
+
+    final user = AppSupabase.client.auth.currentUser;
+    if (user != null) {
+      await _loadProfileFromSupabase(user.id, user.email ?? '');
+    } else {
+      _status = AuthStatus.unauthenticated;
+    }
+    notifyListeners();
+  }
+
+  Future<void> _loadProfileFromSupabase(String id, String email) async {
+    try {
+      final row = await AppSupabase.client
+          .from('profiles')
+          .select()
+          .eq('id', id)
+          .single();
+      _currentUser = UserModel(
+        id: id,
+        name: row['name']?.toString() ?? '',
+        email: email,
+        isEmailVerified: true,
+        isAffiliate: row['is_affiliate'] == true,
+        userType: row['user_type'] == 'afiliado'
+            ? UserType.afiliado
+            : UserType.cliente,
+        createdAt: DateTime.tryParse(row['created_at']?.toString() ?? '') ??
+            DateTime.now(),
+        bio: row['bio']?.toString(),
+        avatarColor: row['avatar_color']?.toString() ?? '#7C3AED',
+      );
+      _status = AuthStatus.authenticated;
+    } catch (e) {
+      _errorMessage = 'Não foi possível carregar o perfil: $e';
+      _status = AuthStatus.unauthenticated;
+    }
+  }
+
+  Future<bool> _loginSupabase(String email, String password) async {
+    _status = AuthStatus.loading;
+    _errorMessage = null;
+    notifyListeners();
+
+    try {
+      final res = await AppSupabase.client.auth
+          .signInWithPassword(email: email, password: password);
+      final user = res.user;
+      if (user == null) {
+        _errorMessage = 'Credenciais inválidas.';
+        _status = AuthStatus.unauthenticated;
+        notifyListeners();
+        return false;
+      }
+      await _loadProfileFromSupabase(user.id, user.email ?? email);
+      notifyListeners();
+      return _status == AuthStatus.authenticated;
+    } on sb.AuthException catch (e) {
+      _errorMessage = e.message;
+      _status = AuthStatus.unauthenticated;
+      notifyListeners();
+      return false;
+    }
+  }
+
+  Future<bool> _registerSupabase(
+      String name, String email, String password, UserType userType) async {
+    _status = AuthStatus.loading;
+    _errorMessage = null;
+    notifyListeners();
+
+    try {
+      final res = await AppSupabase.client.auth.signUp(
+        email: email,
+        password: password,
+        data: {'name': name, 'user_type': userType.name},
+      );
+
+      final user = res.user;
+      if (user == null) {
+        _errorMessage = 'Não foi possível criar a conta.';
+        _status = AuthStatus.unauthenticated;
+        notifyListeners();
+        return false;
+      }
+
+      if (res.session == null) {
+        // Projeto exige confirmação de e-mail antes do primeiro login.
+        _errorMessage =
+            'Cadastro criado! Confirme seu e-mail antes de entrar (verifique a caixa de entrada).';
+        _status = AuthStatus.unauthenticated;
+        notifyListeners();
+        return false;
+      }
+
+      await _loadProfileFromSupabase(user.id, user.email ?? email);
+      notifyListeners();
+      return _status == AuthStatus.authenticated;
+    } on sb.AuthException catch (e) {
+      _errorMessage = e.message;
+      _status = AuthStatus.unauthenticated;
+      notifyListeners();
+      return false;
+    }
+  }
+
+  Future<bool> _forgotPasswordSupabase(String email) async {
+    try {
+      await AppSupabase.client.auth.resetPasswordForEmail(email);
+      return true;
+    } catch (e) {
+      _errorMessage = 'Não foi possível enviar o e-mail de recuperação: $e';
+      return false;
+    }
+  }
+
+  Future<bool> _resetPasswordSupabase(String newPassword) async {
+    try {
+      await AppSupabase.client.auth
+          .updateUser(sb.UserAttributes(password: newPassword));
+      return true;
+    } catch (e) {
+      _errorMessage = 'Não foi possível redefinir a senha: $e';
+      return false;
+    }
+  }
+
+  Future<void> _updateProfileSupabase({
+    String? name,
+    String? bio,
+    String? avatarColor,
+  }) async {
+    final id = _currentUser?.id;
+    if (id == null) return;
+
+    final updates = <String, dynamic>{};
+    if (name != null) updates['name'] = name;
+    if (bio != null) updates['bio'] = bio;
+    if (avatarColor != null) updates['avatar_color'] = avatarColor;
+
+    if (updates.isNotEmpty) {
+      await AppSupabase.client.from('profiles').update(updates).eq('id', id);
+    }
+
+    _currentUser = _currentUser?.copyWith(
+      name: name,
+      bio: bio,
+      avatarColor: avatarColor,
+    );
+    notifyListeners();
+  }
+
+  // ─── Modo local (fallback sem Supabase configurado) ────────────────────────
 
   Future<File> _getFile() => getStorageFile('achados_auth.json');
 
@@ -42,9 +267,7 @@ class AuthService extends ChangeNotifier {
     } catch (_) {}
   }
 
-  // ─── Auth methods ─────────────────────────────────────────────────────────
-
-  Future<void> init() async {
+  Future<void> _initLocal() async {
     _status = AuthStatus.loading;
     notifyListeners();
 
@@ -93,8 +316,7 @@ class AuthService extends ChangeNotifier {
 
     if (isLoggedIn && userJson != null) {
       try {
-        _currentUser =
-            UserModel.fromJson(userJson as Map<String, dynamic>);
+        _currentUser = UserModel.fromJson(userJson as Map<String, dynamic>);
         _status = AuthStatus.authenticated;
       } catch (_) {
         _status = AuthStatus.unauthenticated;
@@ -106,7 +328,7 @@ class AuthService extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<bool> login(String email, String password) async {
+  Future<bool> _loginLocal(String email, String password) async {
     _status = AuthStatus.loading;
     _errorMessage = null;
     notifyListeners();
@@ -132,8 +354,7 @@ class AuthService extends ChangeNotifier {
       return false;
     }
 
-    _currentUser =
-        UserModel.fromJson(entry['profile'] as Map<String, dynamic>);
+    _currentUser = UserModel.fromJson(entry['profile'] as Map<String, dynamic>);
     data['isLoggedIn'] = true;
     data['currentUser'] = _currentUser!.toJson();
     await _save(data);
@@ -143,8 +364,8 @@ class AuthService extends ChangeNotifier {
     return true;
   }
 
-  Future<bool> register(String name, String email, String password,
-      {UserType userType = UserType.cliente}) async {
+  Future<bool> _registerLocal(
+      String name, String email, String password, UserType userType) async {
     _status = AuthStatus.loading;
     _errorMessage = null;
     notifyListeners();
@@ -188,14 +409,14 @@ class AuthService extends ChangeNotifier {
     return true;
   }
 
-  Future<bool> forgotPassword(String email) async {
+  Future<bool> _forgotPasswordLocal(String email) async {
     await Future.delayed(const Duration(milliseconds: 1200));
     final data = await _load();
     final users = (data['users'] as Map<String, dynamic>?) ?? {};
     return users.containsKey(email);
   }
 
-  Future<bool> resetPassword(String email, String newPassword) async {
+  Future<bool> _resetPasswordLocal(String email, String newPassword) async {
     await Future.delayed(const Duration(milliseconds: 1000));
     final data = await _load();
     final users = Map<String, dynamic>.from(
@@ -211,7 +432,7 @@ class AuthService extends ChangeNotifier {
     return true;
   }
 
-  Future<void> updateProfile({
+  Future<void> _updateProfileLocal({
     String? name,
     String? bio,
     String? avatarColor,
@@ -241,16 +462,6 @@ class AuthService extends ChangeNotifier {
     );
     data['currentUser'] = _currentUser!.toJson();
     await _save(data);
-    notifyListeners();
-  }
-
-  Future<void> logout() async {
-    final data = await _load();
-    data['isLoggedIn'] = false;
-    data.remove('currentUser');
-    await _save(data);
-    _currentUser = null;
-    _status = AuthStatus.unauthenticated;
     notifyListeners();
   }
 }

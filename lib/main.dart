@@ -39,6 +39,12 @@ void main() async {
   // Ativa o Supabase somente se SUPABASE_URL/SUPABASE_ANON_KEY foram
   // passados via --dart-define. Sem eles, o app segue usando os mocks.
   await AppSupabase.init();
+  debugPrint(
+    AppSupabase.isConfigured
+        ? '[Supabase] Conectado — login/cadastro vão gravar no banco real.'
+        : '[Supabase] NÃO configurado — rodando em modo local (mocks). '
+            'Passe --dart-define=SUPABASE_URL=... --dart-define=SUPABASE_ANON_KEY=... para conectar.',
+  );
 
   // Initialize all services
   final authService = AuthService();
